@@ -1,12 +1,14 @@
 import System.IO
+import Control.Applicative
 import Control.Monad
 import Data.Function (on)
-import Data.List (groupBy, sortBy)
+import Data.List (find, groupBy, sortBy)
+import Data.Maybe
+import Debug.Trace
 
 type Location = (Int, Int) -- floor, pos
 type ElevatorData = [[Location]]
-type Node = (Int, Int, Int, Int, Int) -- floor, pos, dir, rounds, clones
-data Graph = Graph Node [Graph] | Exit
+type Node = (Int, Int, Int, Int, Int) -- id, floor, pos, dir, rounds, clones
 
 main :: IO ()
 main = do
@@ -33,27 +35,26 @@ main = do
     let elevatorpos = read (input!!1) :: Int -- position of the elevator on its floor
     return (elevatorfloor, elevatorpos)
 
-  firstTurnInfo@(clonefloor, clonepos, clonedir) <- getTurnInfo
+  turnInfo@(clonefloor, clonepos, clonedir) <- getTurnInfo
 
-  let start = (clonefloor, clonepos, 1, nbrounds, nbtotalclones)
-      resources = (nbrounds, nbtotalclones)
-      elevators = groupBy ((==) `on` fst) . sortBy (compare `on` fst) $ allElevators
-      graph = makeGraph (exitfloor, exitpos) elevators start
+  let start = (clonefloor, clonepos, clonedir, nbrounds, nbtotalclones)
+      exit = (exitfloor, exitpos)
+      elevators = groupBy ((==) `on` fst) . sortBy (compare `on` fst) $ exit:allElevators
 
-  loop (clonefloor, clonepos, 1)
+  let pathToExit = removeNeutralNodes clonedir . translateDirections . fromJust . makeGraph exit elevators $ start
+  hPrint stderr pathToExit
+  loop pathToExit turnInfo
 
-loop :: (Int, Int, Int) -> IO ()
-loop (clonefloor, clonepos, _) = do
-  let start = ()
-      graph = ()
-
+loop :: [Node] -> (Int, Int, Int) -> IO ()
+loop pathToExit turnInfo = do
   -- hPutStrLn stderr "Debug messages..."
+  let (action, newPath) = getAction pathToExit turnInfo
 
   -- action: WAIT or BLOCK
-  putStrLn "WAIT"
+  putStrLn action
 
   nextTurnInfo <- getTurnInfo
-  loop nextTurnInfo
+  loop newPath nextTurnInfo
 
 getTurnInfo :: IO (Int, Int, Int)
 getTurnInfo = do
@@ -65,23 +66,55 @@ getTurnInfo = do
                                   _ -> -1
   return (clonefloor, clonepos, clonedir)
 
-makeGraph :: Location -> ElevatorData -> Node -> Graph
-makeGraph exit@(exitfloor, exitpos) elevators node@(f, p, d, r, c) =
-  if f == exitfloor && p == exitpos
-  then Exit
+makeGraph :: Location -> ElevatorData -> Node -> Maybe [Node]
+-- makeGraph exit elevators node@(f, p, d, r, c) | trace (show . filter checkResources . findSiblings' exit elevators $ (f, p, -d, r-3, c-1)) False = undefined
+makeGraph exit elevators node@(f, p, d, r, c) =
+  if (f, p) == exit
+  then Just [node] -- Exit
   else
     let findSiblings = findSiblings' exit elevators
         candidates = filter checkResources . concat $ [findSiblings node, findSiblings (f, p, -d, r-3, c-1)]
-    in Graph node (map (makeGraph exit elevators) candidates)
+        siblings = map (makeGraph exit elevators) candidates
+    in case find isJust siblings of
+      Just (Just []) -> Nothing
+      Just (Just viableFollowup) -> Just $ node:viableFollowup
+      _ -> Nothing
 
 findSiblings' :: Location -> ElevatorData -> Node -> [Node]
 findSiblings' exit elevators (f, p, d, r, c) =
-  let sortFn = (if d > 0 then id else flip) compare `on` fst
-      nextElevators = sortBy sortFn . filter ((>= 0) . (* d) . snd) $ exit:(elevators!!f)
+  let sortFn = (if d > 0 then id else flip) compare `on` snd
+      floorElevators = fromMaybe [] . find ((== f) . fst . (!!0)) $ elevators
+      nextElevators = sortBy sortFn . filter (\(_, ep) -> (ep-p)*d >= 0 ) $ floorElevators
   in case nextElevators of
     [] -> []
-    _ -> [(ef+1, ep, d, r - abs (p-ep) - 1, c)]
-      where (ef, ep) = head nextElevators
+    e@(ef, ep):_ -> if e == exit
+      then [(ef, ep, d, r - abs (p-ep), c)]
+      else [(ef+1, ep, d, r - abs (p-ep) - 1, c)]
 
 checkResources :: Node -> Bool
-checkResources (_, _, d, r, c) = all (>= 0) [d, r, c]
+checkResources (_, _, _, r, c) = all (>= 0) [r, c]
+
+translateDirections :: [Node] -> [Node]
+translateDirections [] = []
+translateDirections [node] = [node]
+translateDirections ((f, p, _, r, c):node2@(_, _, d2, _, _):rest) =
+  (f, p, d2, r, c):translateDirections (node2:rest)
+
+removeNeutralNodes :: Int -> [Node] -> [Node]
+removeNeutralNodes _ [] = []
+removeNeutralNodes d (node@(_, _, nd, _, _):rest)
+  | nd == d = removeNeutralNodes d rest
+  | otherwise = node:removeNeutralNodes (-d) rest
+
+getAction :: [Node] -> (Int, Int, Int) -> (String, [Node])
+getAction [] _ = ("WAIT", [])
+getAction nodes@((nf, np, _, _, _):rest) (f, p, _) =
+  if nf == f && np == p
+    then ("BLOCK", rest)
+    else ("WAIT", nodes)
+
+-- getAction nodes (f, p, d) =
+--   case find (\(nf, np, _, _, _) -> nf == f && np == p) nodes of
+--     Just (_, _, nd, _, _) -> if nd == d then "WAIT" else "BLOCK"
+--     Nothing -> "WAIT"
+--   where wait = ("WAIT", )
